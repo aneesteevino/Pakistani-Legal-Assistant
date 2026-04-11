@@ -2,6 +2,7 @@ export interface Source {
   law_name: string;
   section?: string;
   content_preview: string;
+  page?: number;
 }
 
 export interface QueryResponse {

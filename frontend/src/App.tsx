@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import TypingMessage from './components/TypingMessage';
 import ChatInput from './components/ChatInput';
 import Sidebar from './components/Sidebar';
@@ -26,7 +26,7 @@ function App() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const currentChat = chats.find(chat => chat.id === currentChatId);
-  const messages = currentChat?.messages || [];
+  const messages = useMemo(() => currentChat?.messages || [], [currentChat?.messages]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -41,9 +41,13 @@ function App() {
     loadChatsFromStorage();
   }, []);
 
+  const saveChatsToStorage = useCallback(() => {
+    localStorage.setItem('legal-assistant-chats', JSON.stringify(chats));
+  }, [chats]);
+
   useEffect(() => {
     saveChatsToStorage();
-  }, [chats]);
+  }, [saveChatsToStorage]);
 
   const loadStats = async () => {
     try {
@@ -71,10 +75,6 @@ function App() {
         setCurrentChatId(parsedChats[0].id);
       }
     }
-  };
-
-  const saveChatsToStorage = () => {
-    localStorage.setItem('legal-assistant-chats', JSON.stringify(chats));
   };
 
   const generateChatTitle = (firstMessage: string): string => {

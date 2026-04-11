@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
 from dotenv import load_dotenv
-import openai
+import google.generativeai as genai
 import json
 from pathlib import Path
 
@@ -21,8 +21,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configure OpenAI
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# Configure Gemini
+api_key = os.getenv("GEMINI_API_KEY")
+if api_key:
+    api_key = api_key.strip()
+    genai.configure(api_key=api_key)
 
 class QuestionRequest(BaseModel):
     question: str
@@ -80,6 +83,10 @@ async def ask_question(request: QuestionRequest):
         if not request.question.strip():
             raise HTTPException(status_code=400, detail="Question cannot be empty")
         
+        # Check if Gemini API key is configured
+        if not os.getenv("GEMINI_API_KEY"):
+            raise HTTPException(status_code=500, detail="Gemini API key not configured")
+        
         # Simple search through documents
         relevant_docs = []
         question_lower = request.question.lower()
@@ -99,28 +106,62 @@ async def ask_question(request: QuestionRequest):
                 "page": doc.get('page', 1)
             })
         
-        # Generate response using OpenAI
-        system_prompt = """You are a Pakistani legal assistant. Answer questions about Pakistani law based on the provided context. 
-        Be accurate, cite relevant laws when possible, and if you're not certain about something, say so.
-        Keep responses concise but informative."""
+        # If no relevant documents found, provide a general response
+        if not context.strip():
+            context = "No specific legal documents found for this query. Please provide a general response about Pakistani law."
         
-        user_prompt = f"""Context: {context}
+        # Generate response using Gemini
+        system_prompt = """You are an expert Pakistani legal assistant with deep knowledge of Pakistani law, constitution, and legal procedures. 
         
-        Question: {request.question}
+        Your task is to provide comprehensive, detailed, and well-structured answers about Pakistani law based on the provided context.
         
-        Please provide a helpful answer based on the context provided."""
+        Guidelines for your responses:
+        1. Provide detailed explanations in paragraph form (minimum 3-4 sentences per main point)
+        2. Include relevant legal citations, article numbers, and section references when available
+        3. Explain the practical implications and applications of the law
+        4. Use clear, professional language that both lawyers and citizens can understand
+        5. Structure your response with multiple paragraphs when covering different aspects
+        6. If you're uncertain about specific details, clearly state your limitations
+        7. Provide context about how the law fits into Pakistan's broader legal framework
+        8. ALWAYS end your response with:
+           - A question asking if the user needs clarification on any specific aspect
+           - 2-3 related follow-up questions they might want to explore
         
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            max_tokens=500,
-            temperature=0.3
+        Always aim for comprehensive responses that thoroughly address the question."""
+        
+        user_prompt = f"""Legal Context from Pakistani Documents: {context}
+        
+        User Question: {request.question}
+        
+        Please provide a comprehensive, detailed answer that thoroughly explains the legal aspects of this question. 
+        Your response should be informative, well-structured, and contain multiple paragraphs with detailed explanations.
+        Include relevant legal principles, procedures, and practical implications where applicable.
+
+        IMPORTANT: End your response with:
+        1. A question asking if they need clarification on any specific aspect
+        2. 2-3 related follow-up questions they might want to explore, formatted as:
+           "You might also want to explore:
+           • [Related question 1]
+           • [Related question 2] 
+           • [Related question 3]"
+        
+        Make sure the follow-up questions are directly related to the topic and would be genuinely helpful for someone seeking legal guidance."""
+        
+        # Initialize Gemini model
+        model = genai.GenerativeModel('models/gemini-2.5-flash')
+        
+        # Generate response
+        response = model.generate_content(
+            f"{system_prompt}\n\n{user_prompt}",
+            generation_config=genai.types.GenerationConfig(
+                max_output_tokens=1500,  # Increased for longer responses
+                temperature=0.4,  # Slightly higher for more varied responses
+                top_p=0.8,  # Add top_p for better response quality
+                top_k=40,  # Add top_k for more diverse vocabulary
+            )
         )
         
-        answer = response.choices[0].message.content
+        answer = response.text
         
         return QueryResponse(
             answer=answer,
