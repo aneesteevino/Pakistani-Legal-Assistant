@@ -2,19 +2,28 @@
   "version": 2,
   "builds": [
     {
-      "src": "package.json",
+      "src": "backend/app/main.py",
+      "use": "@vercel/python"
+    },
+    {
+      "src": "frontend/package.json",
       "use": "@vercel/static-build",
       "config": {
-        "distDir": "frontend/build"
+        "distDir": "build"
       }
     }
   ],
   "routes": [
     {
+      "src": "/api/(.*)",
+      "dest": "backend/app/main.py"
+    },
+    {
       "src": "/(.*)",
-      "dest": "frontend/build/$1"
+      "dest": "frontend/$1"
     }
   ],
-  "installCommand": "cd frontend && npm install",
-  "buildCommand": "cd frontend && npm run build"
+  "env": {
+    "GEMINI_API_KEY": "@gemini-api-key"
+  }
 }

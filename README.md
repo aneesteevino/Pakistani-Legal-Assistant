@@ -32,9 +32,9 @@ A sophisticated AI-powered legal assistant with modern glassmorphism UI, designe
 
 ## 🚀 Live Demo
 
-- **Frontend**: [https://your-frontend.vercel.app](https://your-frontend.vercel.app)
-- **Backend API**: [https://your-backend.vercel.app](https://your-backend.vercel.app)
-- **API Docs**: [https://your-backend.vercel.app/docs](https://your-backend.vercel.app/docs)
+- **Frontend**: [https://pakistani-legal-assistant.vercel.app](https://pakistani-legal-assistant.vercel.app)
+- **Backend API**: [https://backend-phi-eight-99.vercel.app](https://backend-phi-eight-99.vercel.app)
+- **API Docs**: [https://backend-phi-eight-99.vercel.app/docs](https://backend-phi-eight-99.vercel.app/docs)
 
 ## 🛠️ Tech Stack
 

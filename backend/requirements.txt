@@ -3,3 +3,7 @@ uvicorn[standard]
 python-dotenv
 google-generativeai
 python-multipart
+pydantic
+httpx
+scikit-learn
+numpy

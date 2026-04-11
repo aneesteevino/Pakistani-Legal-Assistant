@@ -3,7 +3,7 @@ import TypingMessage from './components/TypingMessage';
 import ChatInput from './components/ChatInput';
 import Sidebar from './components/Sidebar';
 import { Message, Chat, ApiStats } from './types';
-import { apiService } from './services/api';
+import { apiService, isModificationRequest } from './services/api';
 import './index.css';
 
 const SAMPLE_QUESTIONS = [
@@ -92,7 +92,7 @@ function App() {
       createdAt: new Date(),
       updatedAt: new Date()
     };
-    
+
     setChats(prev => [newChat, ...prev]);
     setCurrentChatId(newChat.id);
     setIsMobileMenuOpen(false); // Close mobile menu when creating new chat
@@ -100,21 +100,21 @@ function App() {
   };
 
   const updateChatTitle = (chatId: string, firstMessage: string) => {
-    setChats(prev => prev.map(chat => 
-      chat.id === chatId 
+    setChats(prev => prev.map(chat =>
+      chat.id === chatId
         ? { ...chat, title: generateChatTitle(firstMessage), updatedAt: new Date() }
         : chat
     ));
   };
 
   const addMessageToChat = (chatId: string, message: Message) => {
-    setChats(prev => prev.map(chat => 
-      chat.id === chatId 
-        ? { 
-            ...chat, 
-            messages: [...chat.messages, message],
-            updatedAt: new Date()
-          }
+    setChats(prev => prev.map(chat =>
+      chat.id === chatId
+        ? {
+          ...chat,
+          messages: [...chat.messages, message],
+          updatedAt: new Date()
+        }
         : chat
     ));
   };
@@ -138,27 +138,33 @@ function App() {
 
   const handleSendMessage = async (question: string) => {
     let chatId = currentChatId;
-    
+
     // Create new chat if none exists
     if (!chatId) {
       chatId = createNewChat();
     }
 
-    const userMessage: Message = {
-      id: Date.now().toString(),
-      type: 'user',
-      content: question,
-      timestamp: new Date(),
-    };
+    // For continuation and modification requests, don't add a user message
+    const isContinuation = question.toLowerCase() === 'continue';
+    const isModification = isModificationRequest(question);
 
-    addMessageToChat(chatId, userMessage);
+    if (!isContinuation && !isModification) {
+      const userMessage: Message = {
+        id: Date.now().toString(),
+        type: 'user',
+        content: question,
+        timestamp: new Date(),
+      };
 
-    // Update chat title if this is the first user message
-    const currentChatData = chats.find(c => c.id === chatId);
-    const userMessages = currentChatData?.messages.filter(m => m.type === 'user') || [];
-    
-    if (userMessages.length === 0) {
-      updateChatTitle(chatId, question);
+      addMessageToChat(chatId, userMessage);
+
+      // Update chat title if this is the first user message
+      const currentChatData = chats.find(c => c.id === chatId);
+      const userMessages = currentChatData?.messages.filter(m => m.type === 'user') || [];
+
+      if (userMessages.length === 0) {
+        updateChatTitle(chatId, question);
+      }
     }
 
     setIsLoading(true);
@@ -166,20 +172,57 @@ function App() {
 
     try {
       const response = await apiService.askQuestion(question);
-      
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        type: 'assistant',
-        content: response.answer,
-        sources: response.sources,
-        confidence: response.confidence,
-        timestamp: new Date(),
-      };
 
-      addMessageToChat(chatId, assistantMessage);
+      if (isContinuation || isModification) {
+        // For continuation/modification, update the last assistant message
+        const currentChatData = chats.find(c => c.id === chatId);
+        const lastMessage = currentChatData?.messages[currentChatData.messages.length - 1];
+
+        if (lastMessage && lastMessage.type === 'assistant') {
+          // Update the existing message with continued/modified content
+          setChats(prev => prev.map(chat =>
+            chat.id === chatId
+              ? {
+                ...chat,
+                messages: chat.messages.map((msg, index) =>
+                  index === chat.messages.length - 1 && msg.type === 'assistant'
+                    ? { ...msg, content: response.answer, timestamp: new Date() }
+                    : msg
+                ),
+                updatedAt: new Date()
+              }
+              : chat
+          ));
+        } else {
+          // Fallback: add as new message if no assistant message found
+          const assistantMessage: Message = {
+            id: (Date.now() + 1).toString(),
+            type: 'assistant',
+            content: response.answer,
+            sources: response.sources,
+            confidence: response.confidence,
+            follow_up_questions: response.follow_up_questions,
+            timestamp: new Date(),
+          };
+          addMessageToChat(chatId, assistantMessage);
+        }
+      } else {
+        // Regular new message
+        const assistantMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          type: 'assistant',
+          content: response.answer,
+          sources: response.sources,
+          confidence: response.confidence,
+          follow_up_questions: response.follow_up_questions,
+          timestamp: new Date(),
+        };
+
+        addMessageToChat(chatId, assistantMessage);
+      }
     } catch (error: any) {
       console.error('Error asking question:', error);
-      
+
       const errorMessage: Message = {
         id: (Date.now() + 1).toString(),
         type: 'assistant',
@@ -216,7 +259,7 @@ function App() {
       </button>
 
       {/* Mobile Overlay */}
-      <div 
+      <div
         className={`mobile-overlay ${isMobileMenuOpen ? 'open' : ''}`}
         onClick={closeMobileMenu}
       />
@@ -241,7 +284,7 @@ function App() {
               </div>
             </div>
           </div>
-          
+
           <div className="header-right">
             {stats && (
               <div className="stats-card">
@@ -261,7 +304,7 @@ function App() {
                 </div>
               </div>
             )}
-            
+
             <div className="header-actions">
               <button className="header-btn">
                 <div className="status-dot"></div>
@@ -278,7 +321,7 @@ function App() {
                 <div className="welcome-icon">⚖️</div>
                 <h3>What's on your legal agenda today?</h3>
                 <p>Ask me any question about Pakistani law and I'll help you find relevant information from legal documents.</p>
-                
+
                 <div className="sample-questions">
                   <h4>💡 Try asking:</h4>
                   {SAMPLE_QUESTIONS.map((question, index) => (
@@ -295,7 +338,11 @@ function App() {
             ) : (
               <>
                 {messages.map((message) => (
-                  <TypingMessage key={message.id} message={message} />
+                  <TypingMessage
+                    key={message.id}
+                    message={message}
+                    onContinueRequest={handleSendMessage}
+                  />
                 ))}
                 {isLoading && (
                   <div className="loading">
@@ -308,8 +355,8 @@ function App() {
             <div ref={messagesEndRef} />
           </div>
 
-          <ChatInput 
-            onSendMessage={handleSendMessage} 
+          <ChatInput
+            onSendMessage={handleSendMessage}
             isLoading={isLoading}
           />
         </div>
