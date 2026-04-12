@@ -7,13 +7,18 @@ import { apiService, isModificationRequest } from './services/api';
 import './index.css';
 
 const SAMPLE_QUESTIONS = [
-  "What are the penalties for cybercrime under PECA?",
+  "What are the penalties for cybercrime under PECA 2016?",
   "Explain the procedure for filing an FIR under CrPC",
   "What constitutes fraud under PPC Section 420?",
-  "What are the rights of an accused person during investigation?",
-  "What is the punishment for theft under Pakistani law?",
-  "What are the basic rights of civilians?",
-  "What are the rights of judges?"
+  "What are the fundamental rights guaranteed by Pakistan's Constitution?",
+  "How to register a marriage under Pakistani family laws?",
+  "What is the procedure for property transfer in Pakistan?",
+  "What are the rights of an accused person during police investigation?",
+  "How to file for divorce under Pakistani family laws?",
+  "What is the punishment for theft under Pakistani Penal Code?",
+  "What are the grounds for bail in criminal cases?",
+  "How to challenge a government decision in Pakistani courts?",
+  "What are the inheritance laws for Muslims in Pakistan?"
 ];
 
 function App() {

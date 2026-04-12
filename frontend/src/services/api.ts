@@ -52,6 +52,11 @@ export const apiService = {
     return response.data;
   },
 
+  async getSystemStatus(): Promise<any> {
+    const response = await api.get('/api/system-status');
+    return response.data;
+  },
+
   async healthCheck(): Promise<any> {
     const response = await api.get('/api/health');
     return response.data;
