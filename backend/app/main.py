@@ -42,7 +42,7 @@ vectorizer = None
 document_vectors = None
 
 def load_pdf_data():
-    """Load and process PDF data for RAG system"""
+    """Load and process PDF data for RAG system with strict filtering"""
     global pdf_documents, vectorizer, document_vectors
     
     try:
@@ -66,36 +66,50 @@ def load_pdf_data():
         with open(pdf_data_path, 'r', encoding='utf-8') as f:
             raw_documents = json.load(f)
         
-        # Filter out useless documents during loading
+        # Strict filtering for legal documents only
         pdf_documents = []
+        system_terms = ['fastapi', 'vercel', 'backend', 'frontend', 'api', 'system', 'architecture', 
+                       'deployment', 'tfidf', 'rag', 'gemini', 'openai', 'python', 'react', 'typescript']
+        
         for doc in raw_documents:
             text = doc['text'].strip()
-            # Skip documents that are not useful
-            if (len(text) < 50 or  # Too short
+            filename = doc['file_name'].lower()
+            
+            # Skip documents that are not useful or contain system content
+            if (len(text) < 100 or  # Too short
                 text == "THIS LAW HAS BEEN REPEALED" or  # Just repealed notice
-                (text.count("THIS LAW HAS BEEN REPEALED") > 0 and len(text) < 100) or  # Mostly repealed
-                text.count('\n') < 3):  # Too few lines of content
+                (text.count("THIS LAW HAS BEEN REPEALED") > 0 and len(text) < 200) or  # Mostly repealed
+                text.count('\n') < 5 or  # Too few lines of content
+                any(term in text.lower() for term in system_terms) or  # Contains system terms
+                any(term in filename for term in ['readme', 'system', 'config', 'setup'])):  # System files
                 continue
-            pdf_documents.append(doc)
+                
+            # Only include actual legal documents
+            if any(legal_term in filename for legal_term in ['act', 'ordinance', 'code', 'constitution', 'law', 'regulation']):
+                pdf_documents.append(doc)
         
-        logger.info(f"Loaded {len(pdf_documents)} useful documents from {len(raw_documents)} total documents")
+        logger.info(f"Loaded {len(pdf_documents)} clean legal documents from {len(raw_documents)} total documents")
+        
+        if len(pdf_documents) == 0:
+            logger.warning("No valid legal documents found after filtering")
+            return
         
         # Extract text content for vectorization
         document_texts = [doc['text'] for doc in pdf_documents]
         
-        # Create TF-IDF vectorizer
+        # Create TF-IDF vectorizer with legal-focused parameters
         vectorizer = TfidfVectorizer(
-            max_features=5000,
+            max_features=3000,  # Reduced for better performance
             stop_words='english',
             ngram_range=(1, 2),
-            max_df=0.8,
-            min_df=2
+            max_df=0.7,  # More restrictive
+            min_df=3     # Higher minimum frequency
         )
         
         # Fit and transform documents
         document_vectors = vectorizer.fit_transform(document_texts)
         
-        logger.info("Successfully initialized RAG system with TF-IDF vectorization")
+        logger.info("Successfully initialized clean RAG system with TF-IDF vectorization")
         
     except Exception as e:
         logger.error(f"Error loading PDF data: {e}")
@@ -104,7 +118,7 @@ def load_pdf_data():
         document_vectors = None
 
 def search_relevant_documents(query: str, top_k: int = 3) -> List[Dict[str, Any]]:
-    """Search for relevant documents using TF-IDF similarity"""
+    """Search for relevant documents using improved TF-IDF similarity"""
     if not vectorizer or document_vectors is None:
         return []
     
@@ -115,20 +129,22 @@ def search_relevant_documents(query: str, top_k: int = 3) -> List[Dict[str, Any]
         # Calculate cosine similarity
         similarities = cosine_similarity(query_vector, document_vectors).flatten()
         
-        # Get top-k most similar documents
-        top_indices = np.argsort(similarities)[::-1][:top_k * 3]  # Get more candidates to filter
+        # Get top candidates with higher threshold
+        top_indices = np.argsort(similarities)[::-1][:top_k * 2]  # Get fewer candidates
         
         relevant_docs = []
+        system_terms = ['fastapi', 'vercel', 'backend', 'api', 'system', 'architecture']
+        
         for idx in top_indices:
-            if similarities[idx] > 0.1:  # Minimum similarity threshold
+            if similarities[idx] > 0.15:  # Higher similarity threshold
                 doc = pdf_documents[idx]
                 doc_text = doc['text'].strip()
                 
-                # Filter out useless documents
-                if (len(doc_text) < 50 or  # Too short
+                # Strict filtering for legal content only
+                if (len(doc_text) < 100 or  # Too short
                     doc_text == "THIS LAW HAS BEEN REPEALED" or  # Repealed laws
-                    doc_text.count("THIS LAW HAS BEEN REPEALED") > 0 and len(doc_text) < 100 or  # Mostly repealed text
-                    "administrator" in doc['file_name'].lower() and len(doc_text) < 200):  # Short admin files
+                    any(term in doc_text.lower() for term in system_terms) or  # System content
+                    "administrator" in doc['file_name'].lower() and len(doc_text) < 300):  # Short admin files
                     continue
                 
                 relevant_docs.append({
@@ -141,6 +157,7 @@ def search_relevant_documents(query: str, top_k: int = 3) -> List[Dict[str, Any]
                 if len(relevant_docs) >= top_k:
                     break
         
+        logger.info(f"Found {len(relevant_docs)} relevant documents with similarities: {[d['similarity'] for d in relevant_docs]}")
         return relevant_docs
         
     except Exception as e:
@@ -149,6 +166,9 @@ def search_relevant_documents(query: str, top_k: int = 3) -> List[Dict[str, Any]
 
 # Initialize RAG system on startup
 load_pdf_data()
+
+# Vercel handler
+handler = app
 
 # Removed hardcoded responses - system now relies on Gemini API and RAG documents only
 
@@ -169,62 +189,50 @@ class QueryResponse(BaseModel):
     follow_up_questions: List[str] = []
 
 def generate_follow_up_questions(question: str, answer: str, query_type: str) -> List[str]:
-    """Generate relevant follow-up questions using Gemini API"""
+    """Generate simple follow-up questions without API calls"""
     try:
-        model = genai.GenerativeModel('models/gemini-2.5-flash')
+        question_lower = question.lower()
         
         if query_type == "legal":
-            follow_up_prompt = f"""Based on this Pakistani legal question and answer, generate 3 relevant follow-up questions that would help the user explore the topic deeper.
-
-Original Question: {question}
-Answer: {answer[:500]}...
-
-Generate 3 specific, actionable follow-up questions about Pakistani law that are:
-1. Related to the original topic
-2. Practical and useful for the user
-3. About Pakistani legal system, procedures, or rights
-
-Format: Return only the 3 questions, one per line, without numbering or bullets."""
+            # Generate contextual follow-ups based on question content
+            if any(word in question_lower for word in ['penalty', 'punishment', 'fine']):
+                return [
+                    "What is the legal procedure for this offense?",
+                    "How can I get legal representation?",
+                    "What are the appeal options available?"
+                ]
+            elif any(word in question_lower for word in ['rights', 'constitution']):
+                return [
+                    "How can these rights be enforced?",
+                    "What remedies are available if rights are violated?",
+                    "Which court has jurisdiction for constitutional matters?"
+                ]
+            elif any(word in question_lower for word in ['cyber', 'peca', 'electronic']):
+                return [
+                    "How to report cybercrime in Pakistan?",
+                    "What evidence is needed for cybercrime cases?",
+                    "Which authority handles cybercrime complaints?"
+                ]
+            else:
+                return [
+                    "What are the legal procedures for this matter?",
+                    "How can I find a qualified Pakistani lawyer?",
+                    "What documents are needed for this legal issue?"
+                ]
         else:
-            follow_up_prompt = f"""Based on this question and answer, generate 3 relevant follow-up questions that would help the user explore the topic deeper.
-
-Original Question: {question}
-Answer: {answer[:500]}...
-
-Generate 3 specific, actionable follow-up questions that are:
-1. Related to the original topic
-2. Practical and useful for the user
-3. Help them understand the topic better or take next steps
-
-Format: Return only the 3 questions, one per line, without numbering or bullets."""
-
-        response = model.generate_content(
-            follow_up_prompt,
-            generation_config=genai.types.GenerationConfig(
-                max_output_tokens=200,
-                temperature=0.7,
-                top_p=0.8,
-            )
-        )
-        
-        questions = [q.strip() for q in response.text.split('\n') if q.strip()]
-        return questions[:3]  # Return max 3 questions
+            return [
+                "Can you provide more specific information?",
+                "What are the practical steps I should take?",
+                "Where can I learn more about this topic?"
+            ]
         
     except Exception as e:
-        print(f"Error generating follow-up questions: {e}")
-        # Fallback questions based on query type
-        if query_type == "legal":
-            return [
-                "What are the legal procedures related to this matter?",
-                "How can I get legal help for this issue?",
-                "What are my rights in this situation?"
-            ]
-        else:
-            return [
-                "Can you explain this topic in more detail?",
-                "What are the practical applications of this information?",
-                "Where can I learn more about this subject?"
-            ]
+        logger.error(f"Error generating follow-up questions: {e}")
+        return [
+            "What are the legal procedures for this matter?",
+            "How can I get professional legal help?",
+            "What are my rights in this situation?"
+        ]
 
 def create_relevant_sources(question: str, answer: str, query_type: str, relevant_docs: List[Dict] = None) -> List[Source]:
     """Create relevant sources based on the question type, content, and RAG results"""
@@ -427,88 +435,32 @@ def detect_query_type(question: str) -> str:
     return "legal"
 
 def create_dynamic_prompt(question: str, query_type: str, relevant_docs: List[Dict] = None) -> tuple:
-    """Create appropriate prompts based on query type and RAG context"""
+    """Create clean prompts without system leakage"""
     
     if query_type == "legal":
-        # Build context from relevant documents
+        # Build clean context from relevant documents only
         context = ""
         if relevant_docs:
-            context = "\n\nRELEVANT LEGAL DOCUMENTS:\n"
-            for i, doc_info in enumerate(relevant_docs[:3], 1):
+            context = "\n\nLegal Documents:\n"
+            for i, doc_info in enumerate(relevant_docs[:2], 1):
                 doc = doc_info['document']
-                law_name = doc['file_name'].replace('.pdf.txt', '').replace('_', ' ').title()
-                # Use first 1000 characters to avoid token limits
-                doc_text = doc['text'][:1000] + "..." if len(doc['text']) > 1000 else doc['text']
-                context += f"\n{i}. {law_name}:\n{doc_text}\n"
+                # Clean document text - remove system references
+                doc_text = doc['text'][:800] + "..." if len(doc['text']) > 800 else doc['text']
+                # Filter out any system/technical content
+                if not any(term in doc_text.lower() for term in ['fastapi', 'vercel', 'tfidf', 'backend', 'frontend', 'api', 'system']):
+                    context += f"\n{i}. {doc_text}\n"
 
-        system_prompt = f"""You are an expert Pakistani Legal Assistant with comprehensive knowledge of Pakistani law, including:
-
-- Constitution of Pakistan 1973
-- Pakistan Penal Code (PPC) 1860
-- Code of Criminal Procedure (CrPC) 1898
-- Prevention of Electronic Crimes Act (PECA) 2016
-- Family Laws Ordinance 1961
-- Contract Act 1872
-- Evidence Act 1984
-- Civil Procedure Code (CPC) 1908
-- Pakistani court system and legal procedures
-- Islamic jurisprudence as applied in Pakistan
+        system_prompt = f"""You are a Pakistani Legal Assistant. Answer questions about Pakistani law using the provided legal documents.
 
 {context}
 
-INSTRUCTIONS:
-1. Use the relevant legal documents provided above as your primary source of information
-2. Provide accurate, detailed information about Pakistani law
-3. Use clear bullet points and structured formatting
-4. Include specific legal references (articles, sections, acts) from the provided documents
-5. Mention relevant court procedures and legal processes
-6. Provide practical guidance while recommending professional legal consultation
-7. Be specific about Pakistani legal context and jurisdiction
-8. If the provided documents don't contain sufficient information, clearly state this and provide general guidance
+Provide accurate legal information with specific references to Pakistani laws. Always recommend consulting qualified legal professionals for specific cases."""
 
-RESPONSE FORMAT:
-**Answer:**
-• [Detailed legal explanation with specific Pakistani law references from provided documents]
-• [Key procedures, requirements, or penalties based on the legal texts]
-• [Practical steps or guidance for the user]
-
-**Legal Framework:**
-• [Relevant Pakistani laws, acts, or constitutional provisions from the documents]
-• [Court procedures or legal processes mentioned in the sources]
-• [Important legal precedents if applicable]
-
-**Important Note:**
-• [Disclaimer about consulting qualified Pakistani legal professionals]"""
-
-        user_prompt = f"""Question about Pakistani Law: {question}
-
-Please provide a comprehensive answer about this Pakistani legal matter using the relevant legal documents provided. Include relevant laws, procedures, penalties, and practical guidance. Be specific about Pakistani legal context and cite the provided legal sources where applicable."""
+        user_prompt = f"Question: {question}\n\nProvide a detailed answer about Pakistani law based on the legal documents provided."
     
     else:
-        # General query handling
-        system_prompt = """You are a knowledgeable AI assistant that can help with a wide variety of questions and topics. You provide accurate, helpful, and well-structured information.
-
-INSTRUCTIONS:
-1. Provide clear, accurate, and comprehensive answers
-2. Use proper formatting with bullet points when appropriate
-3. Be helpful and informative
-4. If you're unsure about something, clearly state your limitations
-5. Provide practical guidance when applicable
-6. Structure your response clearly
-
-RESPONSE FORMAT:
-**Answer:**
-• [Clear explanation of the topic or question]
-• [Key points, facts, or information]
-• [Practical guidance or next steps if applicable]
-
-**Additional Information:**
-• [Related concepts, tips, or considerations]
-• [Resources or references if helpful]"""
-
-        user_prompt = f"""Question: {question}
-
-Please provide a comprehensive and helpful answer to this question."""
+        system_prompt = "You are a helpful AI assistant. Provide accurate, clear answers to questions."
+        user_prompt = f"Question: {question}\n\nProvide a helpful and accurate answer."
     
     return system_prompt, user_prompt
 
@@ -518,142 +470,115 @@ async def ask_question(request: QuestionRequest):
         if not request.question.strip():
             raise HTTPException(status_code=400, detail="Question cannot be empty")
         
-        # Check if Gemini API key is configured
-        if not os.getenv("GEMINI_API_KEY"):
-            raise HTTPException(status_code=500, detail="Gemini API key not configured")
-        
-        logger.info(f"Processing question: {request.question[:100]}...")
+        logger.info(f"=== NEW QUESTION ===")
+        logger.info(f"Question: {request.question}")
+        logger.info(f"API Key configured: {bool(os.getenv('GEMINI_API_KEY'))}")
+        logger.info(f"RAG documents loaded: {len(pdf_documents) if pdf_documents else 0}")
         
         # Detect query type and search relevant documents
         query_type = detect_query_type(request.question)
+        logger.info(f"Query type detected: {query_type}")
+        
         relevant_docs = []
         
         # For legal queries, search the RAG database
         if query_type == "legal" and pdf_documents:
-            relevant_docs = search_relevant_documents(request.question, top_k=3)
-            logger.info(f"Found {len(relevant_docs)} relevant documents for query")
+            relevant_docs = search_relevant_documents(request.question, top_k=2)  # Reduced to 2
+            logger.info(f"Found {len(relevant_docs)} relevant documents")
         
-        # Create dynamic prompts with RAG context
-        system_prompt, user_prompt = create_dynamic_prompt(request.question, query_type, relevant_docs)
-
-        # Generate response using Gemini API or intelligent fallback
+        # Generate response using Gemini API with better error handling
         try:
-            model = genai.GenerativeModel('models/gemini-2.5-flash')  # Correct model name with 'models/' prefix
+            if not api_key:
+                raise Exception("Gemini API key not configured")
+                
+            model = genai.GenerativeModel('gemini-1.5-flash')  # Use stable model version
+            
+            # Clean prompts without system leakage
+            system_prompt, user_prompt = create_dynamic_prompt(request.question, query_type, relevant_docs)
+            
+            logger.info(f"Sending to Gemini - System prompt length: {len(system_prompt)}, User prompt length: {len(user_prompt)}")
             
             response = model.generate_content(
                 f"{system_prompt}\n\n{user_prompt}",
                 generation_config=genai.types.GenerationConfig(
-                    max_output_tokens=1000,
-                    temperature=0.2 if query_type == "legal" else 0.3,
+                    max_output_tokens=800,  # Reduced to avoid timeouts
+                    temperature=0.3,
                     top_p=0.8,
-                    top_k=30,
                 )
             )
             
-            answer = response.text.strip()
-            logger.info(f"Generated response length: {len(answer)}")
-            
-        except Exception as gemini_error:
-            logger.error(f"Gemini API error: {gemini_error}")
-            
-            # Enhanced RAG-based response when Gemini API fails
-            if relevant_docs:
-                # Create a comprehensive response using RAG documents
-                doc_content = ""
-                law_sources = []
+            if response and response.text:
+                answer = response.text.strip()
+                logger.info(f"Gemini response received - length: {len(answer)}")
+            else:
+                raise Exception("Empty response from Gemini")
                 
-                for doc_info in relevant_docs[:3]:
+        except Exception as gemini_error:
+            logger.error(f"Gemini API error: {str(gemini_error)}")
+            
+            # Clean RAG-based fallback response
+            if relevant_docs:
+                answer = f"""**Legal Information from Pakistani Documents**
+
+**Your Question:** {request.question}
+
+**Based on Legal Documents:**
+"""
+                for doc_info in relevant_docs[:2]:
                     doc = doc_info['document']
                     law_name = doc['file_name'].replace('.pdf.txt', '').replace('_', ' ').title()
                     similarity = doc_info['similarity']
+                    content_snippet = doc['text'][:600] + "..." if len(doc['text']) > 600 else doc['text']
                     
-                    # Use substantial content for comprehensive answers
-                    content_snippet = doc['text'][:1500] + "..." if len(doc['text']) > 1500 else doc['text']
-                    doc_content += f"\n\n**From {law_name} (Relevance: {similarity:.2f}):**\n{content_snippet}"
-                    law_sources.append(law_name)
-                
-                # Create intelligent summary based on question type
-                question_lower = request.question.lower()
-                if any(word in question_lower for word in ['section', 'article', 'law', 'act', 'code']):
-                    intro = "**Legal Provision Information**"
-                elif any(word in question_lower for word in ['procedure', 'process', 'how to', 'steps']):
-                    intro = "**Legal Procedure Information**"
-                elif any(word in question_lower for word in ['rights', 'protection', 'freedom']):
-                    intro = "**Rights and Protections**"
-                else:
-                    intro = "**Pakistani Legal Information**"
-                
-                answer = f"""{intro}
+                    # Filter out system content
+                    if not any(term in content_snippet.lower() for term in ['fastapi', 'vercel', 'backend', 'api']):
+                        answer += f"\n**From {law_name} (Relevance: {similarity:.1f}):**\n{content_snippet}\n"
 
-**Your Question:** {request.question}
+                answer += f"""
+**Important:** This information is from Pakistani legal documents. For specific legal advice, consult qualified Pakistani legal professionals.
 
-**Based on Pakistani Legal Documents:**{doc_content}
+**Contact:** Pakistan Bar Council: +92-51-9201681"""
+            else:
+                answer = f"""**Pakistani Legal Assistant**
 
-**Summary:** This information is extracted from {len(relevant_docs)} relevant Pakistani legal documents including {', '.join(law_sources[:2])}.
+I apologize, but I'm experiencing technical difficulties and couldn't find specific documents for your question: "{request.question}"
 
-**For Detailed Legal Advice:**
-• Consult a qualified Pakistani lawyer
+**For immediate legal help:**
 • Contact Pakistan Bar Council: +92-51-9201681
 • Visit your local district court
-• Access complete legal documents
+• Consult a qualified Pakistani lawyer
 
-**Important:** This information is sourced from official Pakistani legal documents. For specific legal advice and current interpretations, always consult qualified legal professionals."""
-            else:
-                # Enhanced fallback when no RAG documents found
-                answer = f"""**Pakistani Legal Information**
-
-**Your Question:** {request.question}
-
-**Status:** The AI service is temporarily unavailable, and no specific documents were found for your query in our legal database.
-
-**Recommended Actions:**
-• **Immediate Help:** Contact Pakistan Bar Council at +92-51-9201681
-• **Local Assistance:** Visit your nearest district court
-• **Legal Aid:** Contact legal aid services in your area
-• **Online Resources:** Visit Pakistan's official legal portals
-
-**Key Pakistani Legal Resources:**
-• **Constitutional Law:** Constitution of Pakistan 1973
-• **Criminal Law:** Pakistan Penal Code (PPC) 1860, CrPC 1898
-• **Family Law:** Family Laws Ordinance 1961
-• **Cyber Law:** Prevention of Electronic Crimes Act (PECA) 2016
-• **Civil Law:** Contract Act 1872, Transfer of Property Act 1882
-
-**Professional Consultation Required:** For specific legal matters, professional legal advice is essential as laws can have complex interpretations and recent amendments."""
+**Common Pakistani Legal Resources:**
+• Constitution of Pakistan 1973
+• Pakistan Penal Code (PPC) 1860
+• Code of Criminal Procedure (CrPC) 1898
+• Prevention of Electronic Crimes Act (PECA) 2016"""
 
         # Ensure proper formatting
-        if not answer:
-            answer = "I apologize, but I couldn't generate a proper response. Please try rephrasing your question about Pakistani law."
+        if not answer or len(answer.strip()) < 10:
+            answer = f"""**Pakistani Legal Assistant**
+
+I couldn't generate a proper response for: "{request.question}"
+
+**For legal assistance:**
+• Contact Pakistan Bar Council: +92-51-9201681
+• Consult a qualified Pakistani lawyer
+• Visit your local district court"""
         
         # Generate relevant sources based on the question type and RAG results
         sources = create_relevant_sources(request.question, answer, query_type, relevant_docs)
         
-        # Generate follow-up questions using Gemini
-        try:
-            follow_ups = generate_follow_up_questions(request.question, answer, query_type)
-        except Exception as followup_error:
-            logger.error(f"Error generating follow-up questions: {followup_error}")
-            follow_ups = [
-                "What are the legal procedures for this matter?",
-                "How can I find a qualified Pakistani lawyer?",
-                "What documents do I need for this legal issue?"
-            ]
+        # Generate simple follow-up questions
+        follow_ups = generate_follow_up_questions(request.question, answer, query_type)
         
-        # Determine confidence based on response quality, query type, and RAG results
-        if "Gemini API error" in str(locals().get('gemini_error', '')):
-            # When using RAG fallback, confidence depends on document relevance
-            if relevant_docs and len(relevant_docs) > 0:
-                avg_similarity = sum(doc['similarity'] for doc in relevant_docs) / len(relevant_docs)
-                confidence = min(0.85, 0.6 + (avg_similarity * 0.25))  # RAG-based confidence
-            else:
-                confidence = 0.3  # Low confidence when no relevant docs
+        # Determine confidence based on response quality and RAG results
+        if relevant_docs and len(relevant_docs) > 0:
+            avg_similarity = sum(doc['similarity'] for doc in relevant_docs) / len(relevant_docs)
+            confidence = min(0.9, 0.5 + (avg_similarity * 0.4))  # RAG-based confidence
         else:
-            # Normal Gemini API response confidence
-            base_confidence = 0.9 if len(answer) > 200 and ("**Answer:**" in answer or query_type == "general") else 0.7
-            rag_boost = 0.1 if relevant_docs else 0.0
-            confidence = min(1.0, base_confidence + rag_boost)
+            confidence = 0.6 if "Pakistani Legal Assistant" not in answer else 0.3
         
-        logger.info(f"Response generated successfully with confidence: {confidence}")
+        logger.info(f"Response generated successfully - confidence: {confidence}, sources: {len(sources)}")
         
         return QueryResponse(
             answer=answer,
@@ -666,15 +591,27 @@ async def ask_question(request: QuestionRequest):
         raise
     except Exception as e:
         logger.error(f"Unexpected error processing question: {e}", exc_info=True)
-        # Return helpful error response
-        error_answer = """I apologize, but I encountered an error while processing your Pakistani legal question.
+        
+        # Return clean error response
+        return QueryResponse(
+            answer=f"""**Pakistani Legal Assistant - Service Error**
 
-**Possible Issues:**
-• Temporary connectivity issue with the AI service
-• Complex legal query that needs clarification
-• System overload
+I encountered an error while processing your question: "{request.question}"
 
-**Please Try:**
+**For immediate legal assistance:**
+• Contact Pakistan Bar Council: +92-51-9201681
+• Visit your local district court
+• Consult a qualified Pakistani lawyer
+
+**Error Details:** Technical service temporarily unavailable. Please try again in a few minutes.""",
+            sources=[],
+            confidence=0.1,
+            follow_up_questions=[
+                "How can I contact Pakistan Bar Council?",
+                "Where is my nearest district court?",
+                "What should I do for urgent legal matters?"
+            ]
+        )Try:**
 • Rephrasing your question about Pakistani law
 • Being more specific about the legal area (criminal, civil, family law, etc.)
 • Trying again in a few moments
